@@ -49,6 +49,7 @@ type Connection struct {
 	inputBuffer []byte
 	lastRx      time.Time
 	lock        sync.Mutex
+	closeErr    error
 }
 
 func ScanVehicleBeacon(ctx context.Context, vin string, adapter Adapter) (*Beacon, error) {
@@ -171,8 +172,13 @@ func (c *Connection) VIN() string {
 }
 
 func (c *Connection) Close() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.closeErr = nil
 	if err := c.device.Close(); err != nil {
 		slog.Warn("BLE connection close failed", slog.Any("error", err))
+		c.closeErr = err
 	}
 }
 
@@ -186,6 +192,13 @@ func (c *Connection) RetryInterval() time.Duration {
 
 func (c *Connection) AllowedLatency() time.Duration {
 	return maxLatency
+}
+
+func (c *Connection) CloseErr() error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	return c.closeErr
 }
 
 func (c *Connection) rx(p []byte) {
