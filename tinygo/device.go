@@ -3,6 +3,7 @@ package tinygo
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/zlymeda/tzla-ble"
 	"tinygo.org/x/bluetooth"
@@ -10,6 +11,7 @@ import (
 
 type device struct {
 	client *bluetooth.Device
+	mu     sync.Mutex
 }
 
 func (c *device) Service(_ context.Context, uuid string) (ble.Service, error) {
@@ -25,11 +27,12 @@ func (c *device) Service(_ context.Context, uuid string) (ble.Service, error) {
 }
 
 func (c *device) Close() error {
-	if c.client == nil {
-		return nil
-	}
-
+	c.mu.Lock()
 	client := c.client
 	c.client = nil
+	c.mu.Unlock()
+	if client == nil {
+		return nil
+	}
 	return client.Disconnect()
 }

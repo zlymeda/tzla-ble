@@ -12,6 +12,8 @@ import (
 	"tinygo.org/x/bluetooth"
 )
 
+const connectGracePeriod = 5 * time.Second
+
 var ErrAdapterInvalidID = protocol.NewError("the bluetooth adapter ID is invalid", false, false)
 
 func NewAdapter(id string) (ble.Adapter, error) {
@@ -58,10 +60,13 @@ func (s *adapter) ScanBeacon(ctx context.Context, name string) (*ble.Beacon, err
 		stopScan()
 	}()
 
-	var result *ble.Beacon
+	resultCh := make(chan *ble.Beacon, 1)
 	err := s.device.Scan(func(_ *bluetooth.Adapter, a bluetooth.ScanResult) {
 		if a.LocalName() == name {
-			result = advertisementToBeacon(a)
+			select {
+			case resultCh <- advertisementToBeacon(a):
+			default:
+			}
 			stopScan()
 		}
 	})
@@ -70,11 +75,12 @@ func (s *adapter) ScanBeacon(ctx context.Context, name string) (*ble.Beacon, err
 		return nil, err
 	}
 
-	if result == nil {
+	select {
+	case r := <-resultCh:
+		return r, nil
+	default:
 		return nil, scanCtx.Err()
 	}
-
-	return result, err
 }
 
 func (s *adapter) Connect(ctx context.Context, beacon *ble.Beacon) (ble.Device, error) {
@@ -92,12 +98,46 @@ func (s *adapter) Connect(ctx context.Context, beacon *ble.Beacon) (ble.Device, 
 		return nil, err
 	}
 
-	client, err := s.device.Connect(addr, params)
-	if err != nil {
-		return nil, err
+	type connectResult struct {
+		client bluetooth.Device
+		err    error
 	}
 
-	return &device{client: &client}, nil
+	ch := make(chan connectResult, 1)
+	go func() {
+		client, err := s.device.Connect(addr, params)
+		select {
+		case ch <- connectResult{client, err}:
+		default:
+			slog.Warn("ble adapter: Connect returned after caller gave up",
+				slog.String("address", beacon.Address), slog.Any("err", err))
+			if err == nil {
+				_ = client.Disconnect()
+			}
+		}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return &device{client: &res.client}, nil
+
+	case <-ctx.Done():
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				return nil, res.err
+			}
+			return &device{client: &res.client}, nil
+
+		case <-time.After(connectGracePeriod):
+			slog.Warn("ble adapter stuck: Connect did not return after context cancellation",
+				slog.String("address", beacon.Address))
+			return nil, fmt.Errorf("ble: adapter stuck, connect did not return after cancel")
+		}
+	}
 }
 
 func (s *adapter) Close() error {

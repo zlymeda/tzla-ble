@@ -44,7 +44,7 @@ func (s *service) discover(uuid string) (bluetooth.DeviceCharacteristic, error) 
 	}
 
 	if len(characteristics) == 0 {
-		return bluetooth.DeviceCharacteristic{}, fmt.Errorf("ble: failed to discover service characteristics: %s", err)
+		return bluetooth.DeviceCharacteristic{}, fmt.Errorf("ble: characteristic %s not found", uuid)
 	}
 
 	return characteristics[0], nil

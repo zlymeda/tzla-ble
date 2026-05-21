@@ -48,6 +48,7 @@ type Connection struct {
 	blockLength int
 	inputBuffer []byte
 	lastRx      time.Time
+	rxLock      sync.Mutex // protects inputBuffer and lastRx
 	lock        sync.Mutex
 	closeErr    error
 }
@@ -202,6 +203,9 @@ func (c *Connection) CloseErr() error {
 }
 
 func (c *Connection) rx(p []byte) {
+	c.rxLock.Lock()
+	defer c.rxLock.Unlock()
+
 	if time.Since(c.lastRx) > rxTimeout {
 		c.inputBuffer = []byte{}
 	}
@@ -225,6 +229,7 @@ func (c *Connection) flush() bool {
 			select {
 			case c.inbox <- buffer:
 			default:
+				slog.Warn("BLE inbox full, dropping message", slog.Int("len", msgLength))
 				return false
 			}
 			return true

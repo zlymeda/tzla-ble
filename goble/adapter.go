@@ -2,6 +2,9 @@ package goble
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/teslamotors/vehicle-command/pkg/protocol"
 	goble "github.com/zlymeda/go-ble"
@@ -49,12 +52,49 @@ func (s *adapter) ScanBeacon(ctx context.Context, name string) (*ble.Beacon, err
 }
 
 func (s *adapter) Connect(ctx context.Context, beacon *ble.Beacon) (ble.Device, error) {
-	client, err := s.device.Dial(ctx, goble.NewAddr(beacon.Address))
-	if err != nil {
-		return nil, err
+	type dialResult struct {
+		client goble.Client
+		err    error
 	}
 
-	return &device{client: client}, nil
+	ch := make(chan dialResult, 1)
+	go func() {
+		client, err := s.device.Dial(ctx, goble.NewAddr(beacon.Address))
+		select {
+		case ch <- dialResult{client, err}:
+		default:
+			// Nobody is reading — Connect already returned due to timeout.
+			// Close the client if we got one to avoid resource leaks.
+			slog.Warn("ble adapter: Dial returned after Connect gave up",
+				slog.String("address", beacon.Address), slog.Any("err", err))
+			if client != nil {
+				_ = client.CancelConnection()
+			}
+		}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return nil, res.err
+		}
+		return &device{client: res.client}, nil
+
+	case <-ctx.Done():
+		// Context expired — give Dial a grace period to finish cancelDial.
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				return nil, res.err
+			}
+			return &device{client: res.client}, nil
+
+		case <-time.After(5 * time.Second):
+			slog.Warn("ble adapter stuck: Dial did not return after context cancellation",
+				slog.String("address", beacon.Address))
+			return nil, fmt.Errorf("ble: adapter stuck, dial did not return after cancel")
+		}
+	}
 }
 
 func (s *adapter) Close() error {
