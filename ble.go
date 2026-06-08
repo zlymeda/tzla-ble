@@ -265,6 +265,7 @@ func (c *Connection) flush() bool {
 				select {
 				case dropped := <-c.inbox:
 					slog.Warn("BLE inbox full, dropped oldest message to make room",
+						slog.String("vin", c.vin),
 						slog.Int("droppedLen", len(dropped)),
 						slog.Int("newLen", msgLength),
 						slog.Int("depth", len(c.inbox)),
@@ -277,7 +278,7 @@ func (c *Connection) flush() bool {
 			if inboxDebug {
 				if depth := len(c.inbox); depth > c.inboxHWM {
 					c.inboxHWM = depth
-					slog.Debug("BLE inbox high-water mark", slog.Int("hwm", depth), slog.Int("cap", cap(c.inbox)))
+					slog.Debug("BLE inbox high-water mark", slog.String("vin", c.vin), slog.Int("hwm", depth), slog.Int("cap", cap(c.inbox)))
 				}
 			}
 			return true
