@@ -24,7 +24,7 @@ type Device interface {
 }
 
 type Service interface {
-	Rx(uuid string, callback func(buf []byte)) error
+	Rx(uuid string, callback func(buf []byte)) (cancel func() error, err error)
 	Tx(uuid string) (Writer, error)
 }
 

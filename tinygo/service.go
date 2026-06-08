@@ -12,17 +12,19 @@ type service struct {
 	service bluetooth.DeviceService
 }
 
-func (s *service) Rx(uuid string, callback func(buf []byte)) error {
+func (s *service) Rx(uuid string, callback func(buf []byte)) (func() error, error) {
 	characteristic, err := s.discover(uuid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := characteristic.EnableNotifications(callback); err != nil {
-		return fmt.Errorf("ble: failed to subscribe to RX: %s", err)
+		return nil, fmt.Errorf("ble: failed to subscribe to RX: %s", err)
 	}
 
-	return nil
+	return func() error {
+		return characteristic.EnableNotifications(nil)
+	}, nil
 }
 
 func (s *service) Tx(uuid string) (ble.Writer, error) {

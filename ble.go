@@ -48,10 +48,11 @@ func VehicleLocalName(vin string) string {
 }
 
 type Connection struct {
-	vin    string
-	inbox  chan []byte
-	device Device
-	writer Writer
+	vin      string
+	inbox    chan []byte
+	device   Device
+	writer   Writer
+	cancelRx func() error
 
 	blockLength int
 	inputBuffer []byte
@@ -122,11 +123,16 @@ func resolvedInboxSize() int {
 	return inboxSize
 }
 
-func tryToConnect(ctx context.Context, vin string, beacon *Beacon, adapter Adapter) (*Connection, error) {
+func tryToConnect(ctx context.Context, vin string, beacon *Beacon, adapter Adapter) (result *Connection, err error) {
 	device, err := adapter.Connect(ctx, beacon)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if result == nil {
+			_ = device.Close()
+		}
+	}()
 
 	service, err := device.Service(ctx, vehicleServiceUUID)
 	if err != nil {
@@ -154,10 +160,11 @@ func tryToConnect(ctx context.Context, vin string, beacon *Beacon, adapter Adapt
 		blockLength: txMtu,
 	}
 
-	err = service.Rx(fromVehicleUUID, conn.rx)
+	cancelRx, err := service.Rx(fromVehicleUUID, conn.rx)
 	if err != nil {
 		return nil, err
 	}
+	conn.cancelRx = cancelRx
 
 	return conn, nil
 }
@@ -207,6 +214,13 @@ func (c *Connection) VIN() string {
 func (c *Connection) Close() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	if c.cancelRx != nil {
+		if err := c.cancelRx(); err != nil {
+			slog.Debug("BLE RX unsubscribe failed", slog.Any("error", err))
+		}
+		c.cancelRx = nil
+	}
 
 	c.closeErr = nil
 	if err := c.device.Close(); err != nil {

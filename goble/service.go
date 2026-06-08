@@ -13,17 +13,19 @@ type service struct {
 	service *goble.Service
 }
 
-func (s *service) Rx(uuid string, callback func(buf []byte)) error {
+func (s *service) Rx(uuid string, callback func(buf []byte)) (func() error, error) {
 	characteristic, err := s.discover(uuid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := s.client.Subscribe(characteristic, true, callback); err != nil {
-		return fmt.Errorf("ble: failed to subscribe to RX: %s", err)
+		return nil, fmt.Errorf("ble: failed to subscribe to RX: %s", err)
 	}
 
-	return nil
+	return func() error {
+		return s.client.Unsubscribe(characteristic, true)
+	}, nil
 }
 
 func (s *service) Tx(uuid string) (ble.Writer, error) {
