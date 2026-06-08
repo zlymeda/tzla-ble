@@ -1,11 +1,14 @@
 package ble
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,6 +18,8 @@ import (
 
 var (
 	ErrMaxConnectionsExceeded = protocol.NewError("the vehicle is already connected to the maximum number of BLE devices", false, false)
+
+	inboxDebug = os.Getenv("BLE_INBOX_DEBUG") != ""
 )
 
 const (
@@ -24,6 +29,8 @@ const (
 
 	rxTimeout  = time.Second     // Timeout interval between receiving chunks of a message
 	maxLatency = 4 * time.Second // Max allowed error when syncing a vehicle clock
+
+	inboxSize = 100
 )
 
 //goland:noinspection ALL
@@ -48,6 +55,7 @@ type Connection struct {
 	blockLength int
 	inputBuffer []byte
 	lastRx      time.Time
+	inboxHWM    int
 	rxLock      sync.Mutex // protects inputBuffer and lastRx
 	lock        sync.Mutex
 	closeErr    error
@@ -94,6 +102,15 @@ func NewConnectionFromBeacon(ctx context.Context, vin string, beacon *Beacon, ad
 	}
 }
 
+func resolvedInboxSize() int {
+	if s := os.Getenv("BLE_INBOX_SIZE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
+		}
+	}
+	return inboxSize
+}
+
 func tryToConnect(ctx context.Context, vin string, beacon *Beacon, adapter Adapter) (*Connection, error) {
 	device, err := adapter.Connect(ctx, beacon)
 	if err != nil {
@@ -119,7 +136,7 @@ func tryToConnect(ctx context.Context, vin string, beacon *Beacon, adapter Adapt
 
 	conn := &Connection{
 		vin:    vin,
-		inbox:  make(chan []byte, 5),
+		inbox:  make(chan []byte, resolvedInboxSize()),
 		device: device,
 		writer: writer,
 
@@ -139,6 +156,10 @@ func (c *Connection) Receive() <-chan []byte {
 }
 
 func (c *Connection) Send(ctx context.Context, buffer []byte) error {
+	if len(buffer) > maxBLEMessageSize {
+		return fmt.Errorf("ble: message too large: %d > %d", len(buffer), maxBLEMessageSize)
+	}
+
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -223,14 +244,25 @@ func (c *Connection) flush() bool {
 			return false
 		}
 		if len(c.inputBuffer) >= 2+msgLength {
-			buffer := c.inputBuffer[2 : 2+msgLength]
+			buffer := bytes.Clone(c.inputBuffer[2 : 2+msgLength])
 			slog.Debug("RX", "hex", hex.EncodeToString(buffer))
 			c.inputBuffer = c.inputBuffer[2+msgLength:]
 			select {
 			case c.inbox <- buffer:
 			default:
-				slog.Warn("BLE inbox full, dropping message", slog.Int("len", msgLength))
-				return false
+				// Drain oldest message to make room for the newest
+				select {
+				case dropped := <-c.inbox:
+					slog.Warn("BLE inbox full, dropped oldest message to make room", slog.Int("droppedLen", len(dropped)), slog.Int("newLen", msgLength))
+				default:
+				}
+				c.inbox <- buffer
+			}
+			if inboxDebug {
+				if depth := len(c.inbox); depth > c.inboxHWM {
+					c.inboxHWM = depth
+					slog.Debug("BLE inbox high-water mark", slog.Int("hwm", depth), slog.Int("cap", cap(c.inbox)))
+				}
 			}
 			return true
 		}
