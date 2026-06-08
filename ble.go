@@ -253,7 +253,12 @@ func (c *Connection) flush() bool {
 				// Drain oldest message to make room for the newest
 				select {
 				case dropped := <-c.inbox:
-					slog.Warn("BLE inbox full, dropped oldest message to make room", slog.Int("droppedLen", len(dropped)), slog.Int("newLen", msgLength))
+					slog.Warn("BLE inbox full, dropped oldest message to make room",
+						slog.Int("droppedLen", len(dropped)),
+						slog.Int("newLen", msgLength),
+						slog.Int("depth", len(c.inbox)),
+						slog.Int("cap", cap(c.inbox)),
+					)
 				default:
 				}
 				c.inbox <- buffer

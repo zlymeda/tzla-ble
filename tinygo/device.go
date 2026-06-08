@@ -3,6 +3,7 @@ package tinygo
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/zlymeda/tzla-ble"
@@ -34,5 +35,10 @@ func (c *device) Close() error {
 	if client == nil {
 		return nil
 	}
-	return client.Disconnect()
+	err := client.Disconnect()
+	if err != nil && strings.Contains(err.Error(), "doesn't exist") {
+		// BlueZ already removed the device — car disconnected first, not an error
+		return nil
+	}
+	return err
 }
