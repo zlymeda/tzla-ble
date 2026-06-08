@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +92,9 @@ func NewConnectionFromBeacon(ctx context.Context, vin string, beacon *Beacon, ad
 		}
 
 		slog.Warn("BLE connection attempt failed", slog.Any("error", err))
+		if isStaleDeviceError(err) {
+			return nil, err
+		}
 		if err := ctx.Err(); err != nil {
 			if lastError != nil {
 				return nil, lastError
@@ -100,6 +104,13 @@ func NewConnectionFromBeacon(ctx context.Context, vin string, beacon *Beacon, ad
 		lastError = err
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// isStaleDeviceError returns true when the BlueZ D-Bus device object no longer
+// exists — the car disconnected and BlueZ cleaned it up. Retrying with the same
+// beacon address will keep failing; the caller must rescan.
+func isStaleDeviceError(err error) bool {
+	return strings.Contains(err.Error(), "doesn't exist")
 }
 
 func resolvedInboxSize() int {
