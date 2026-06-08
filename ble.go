@@ -60,6 +60,7 @@ type Connection struct {
 	inboxHWM    int
 	rxLock      sync.Mutex // protects inputBuffer and lastRx
 	lock        sync.Mutex
+	closed      bool
 	closeErr    error
 }
 
@@ -215,16 +216,24 @@ func (c *Connection) Close() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
+	if c.closed {
+		return
+	}
+	c.closed = true
+
+	if n := len(c.inbox); n > 0 {
+		slog.Warn("BLE connection closing with unread inbox messages", slog.String("vin", c.vin), slog.Int("unread", n))
+	}
+
 	if c.cancelRx != nil {
-		if err := c.cancelRx(); err != nil {
-			slog.Debug("BLE RX unsubscribe failed", slog.Any("error", err))
+		if err := c.cancelRx(); err != nil && !isStaleDeviceError(err) {
+			slog.Warn("BLE RX unsubscribe failed", slog.String("vin", c.vin), slog.Any("error", err))
 		}
 		c.cancelRx = nil
 	}
 
-	c.closeErr = nil
 	if err := c.device.Close(); err != nil {
-		slog.Warn("BLE connection close failed", slog.Any("error", err))
+		slog.Warn("BLE connection close failed", slog.String("vin", c.vin), slog.Any("error", err))
 		c.closeErr = err
 	}
 }
@@ -253,6 +262,12 @@ func (c *Connection) rx(p []byte) {
 	defer c.rxLock.Unlock()
 
 	if time.Since(c.lastRx) > rxTimeout {
+		if len(c.inputBuffer) > 0 {
+			slog.Warn("BLE RX buffer reset: gap in BLE stream, partial message discarded",
+				slog.String("vin", c.vin),
+				slog.Int("discarded", len(c.inputBuffer)),
+			)
+		}
 		c.inputBuffer = []byte{}
 	}
 	c.lastRx = time.Now()
@@ -265,6 +280,11 @@ func (c *Connection) flush() bool {
 	if len(c.inputBuffer) >= 2 {
 		msgLength := 256*int(c.inputBuffer[0]) + int(c.inputBuffer[1])
 		if msgLength > maxBLEMessageSize {
+			slog.Warn("BLE RX oversized message, resetting buffer",
+				slog.String("vin", c.vin),
+				slog.Int("msgLength", msgLength),
+				slog.Int("max", maxBLEMessageSize),
+			)
 			c.inputBuffer = []byte{}
 			return false
 		}
